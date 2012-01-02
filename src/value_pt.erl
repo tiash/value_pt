@@ -2,10 +2,8 @@
 
 -export([parse_transform/2]).
 
--define(debug(Value),(fun (__V__) -> ?debug("~s = ~p",[??Value,__V__]),__V__ end)(Value)).
-% -define(debug(Pattern,Args),
-%   io:format("~s:~p   "++Pattern++"~n",[?FILE,?LINE]++Args)).
--define(debug(Pattern,Args),ok).
+-include("debug.hrl").
+
 -include("parsetransform.hrl").
 
 parse_transform(Forms0,_Options) ->
@@ -24,8 +22,7 @@ parse_transform(Forms0,_Options) ->
       Forms5 = insert_at_end(Forms4, field_logic(Module,Fields)),
       Forms6 = insert_in_head(Forms5, member_exports(Module,Members,Fields)),
       Forms7 = syntax_fold(fun (E) -> mangle_members(E,Module,Members,Fields) end,Forms6),
-      %% ?debug(Forms10),
-      % catch io:format("~s",[erl_prettypr:format(Forms10)]),
+      ?debug_pt(Forms7),
       erl_syntax:revert_forms(Forms7)
   end.
 
@@ -183,19 +180,17 @@ find_member(Name,Arity,Member=#member{name=Name,arity=Arity}) -> Member;
 find_member(_Name,_Arity,_) -> undefined.
 
 field_members(_Module,Fields) ->
-  [ erl_syntax:attribute(?atom(member), [ ?abstract({{extern,0},[public,mutator,{mangle,false}]}) ] )
-  , erl_syntax:attribute(?atom(member), [ ?abstract({{intern,0},[public,mutator,{mangle,false}]}) ] )
-  | [ [ erl_syntax:attribute(?atom(member), [ ?abstract(
+  [ [ erl_syntax:attribute(?atom(member), [ ?abstract(
           {{F#field.getter,0},if F#field.getter_public -> [public]; true -> [private] end ++ [accessor,{mangle,false}]}
-        )])
-      % , erl_syntax:attribute(?atom(member), [ ?tuple([
-      %     erl_syntax:arity_qualifier(?atom(F#field.setter),?integer(1)),
-      %     ?abstract(if F#field.setter_public -> [public]; true -> [private] end ++ [mutator,{mangle,false}])
-      %   ])])
-      , erl_syntax:attribute(?atom(member), [ ?abstract(
-          {{F#field.setter,1},if F#field.setter_public -> [public]; true -> [private] end ++ [mutator,{mangle,false}]}
-        )])
-      ] || F <- Fields ]
+      )])
+    % , erl_syntax:attribute(?atom(member), [ ?tuple([
+    %     erl_syntax:arity_qualifier(?atom(F#field.setter),?integer(1)),
+    %     ?abstract(if F#field.setter_public -> [public]; true -> [private] end ++ [mutator,{mangle,false}])
+    %   ])])
+    , erl_syntax:attribute(?atom(member), [ ?abstract(
+        {{F#field.setter,1},if F#field.setter_public -> [public]; true -> [private] end ++ [mutator,{mangle,false}]}
+      )])
+    ] || F <- Fields
   ].
 field_logic(Module,Fields) ->
   [ [ ?suppress_unused(F#field.getter,1)
@@ -220,9 +215,9 @@ field_setter(#field{name=Name,setter=Setter},Module,_Fields) ->
 init_logic(Module,Fields) ->
   [ ?suppress_unused(init,length([ F || F=#field{default=no_default} <- Fields ]))
   , ?function(init, [?clause([?var('FIELD',F#field.name) || F=#field{default=no_default} <- Fields ],none,
-      [?record(Module,[?field(internal,?record(internal,[ ?field(F#field.name, case F#field.default of no_default -> ?var('FIELD',F#field.name);
+      [?record(Module,[ ?field(F#field.name, case F#field.default of no_default -> ?var('FIELD',F#field.name);
                                                                                                        #default{value=Value} -> ?abstract(Value) end)
-                                                          || F<-Fields ]))])])])
+                                                          || F<-Fields ])])])
   ].
 member_exports(_Module,Members,_Fields) ->
   % [ erl_syntax:attribute(?atom(export), [?abstract([{Name,Arity+1}])])

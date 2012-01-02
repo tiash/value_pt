@@ -1,0 +1,11 @@
+
+-ifndef(debug_hrl).
+-define(debug_hrl,?FILE).
+-ifdef(DEBUG).
+-define(debug(FMT,VALS),(begin io:format("(~s:~p) "++FMT++"~n",[?FILE,?LINE|VALS]),ok end)).
+-define(debug(VAL),((fun(__val__)->?debug("~s = ~p",[??VAL,__val__]),__val__ end)(VAL))).
+-else.
+-define(debug(FMT,VALS),ok).
+-define(debug(VAL),(VAL)).
+-endif.
+-endif.

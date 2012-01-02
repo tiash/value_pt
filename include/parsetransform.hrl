@@ -1,6 +1,19 @@
 -define(forms(F), erl_syntax:flatten_form_list(erl_syntax:form_list(lists:flatten([F])))).
 -define(unforms(F), erl_syntax:form_list_elements(?forms(F))).
 
+-define(debug_pt(FORMS),?debug("~s~n"++
+                               "======================~n"++
+                               "~s~n"++
+                               "======================~n~n",[??FORMS,[[
+                                  case catch erl_prettypr:format(F) of
+                                    STR when is_list(STR) -> STR;
+                                    ERR when  is_tuple(ERR) -> io_lib:format("% ~p~n% ~p~n",[ERR,F])
+                                  end,"\n"] || F<-lists:flatten([FORMS])]])).
+    
+
+
+
+
 -compile([{nowarn_unused_function,syntax_fold/2}]).
 -compile([{nowarn_unused_function,syntax_fold/3}]).
 -compile([{nowarn_unused_function,syntax_fold/4}]).
@@ -10,6 +23,8 @@
 -compile([{nowarn_unused_function,insert_at_top/2}]).
 -compile([{nowarn_unused_function,insert_in_head/2}]).
 -compile([{nowarn_unused_function,insert_at_end/2}]).
+-compile([{nowarn_unused_function,var/0}]).
+-compile([{nowarn_unused_function,nextN/0}]).
 
 -define(atom(Atom),erl_syntax:atom(Atom)).
 -define(var(Var),erl_syntax:variable(Var)).
@@ -43,8 +58,19 @@
 -define(gteq(A,B),?infix(A,'>=',B)).
 -define(lt(A,B),?infix(A,'<',B)).
 -define(lteq(A,B),?infix(A,'=<',B)).
+-define(AND(A,B),?infix(A,'and',B)).
+-define(ANDALSO(A,B),?infix(A,'andalso',B)).
+-define(OR(A,B),?infix(A,'or',B)).
+-define(ORELSE(A,B),?infix(A,'orelse',B)).
 
--define(suppress_unused(Fun,Arity),erl_syntax:attribute(?atom(compile),[ ?abstract({nowarn_unused_function,{Fun,Arity}}) ])).
+-define(nif_element(N,VALUE),?apply('element',[?int(N),VALUE])).
+-define(nif_not(VALUE),?apply('not',[VALUE])).
+-define(nif_size(VALUE),?apply('size',[VALUE])).
+-define(nif_is_tuple(VALUE),?apply('is_tuple',[VALUE])).
+
+
+-define(suppress_unused(Fun,Arity),erl_syntax:attribute(?atom(compile),[ ?abstract([{nowarn_unused_function,{Fun,Arity}}]) ])).
+-define(export(Fun,Arity),erl_syntax:attribute(?atom(export),[?list([erl_syntax:arity_qualifier(?atom(Fun),?int(Arity))])])).
 
 syntax_fold(Fun,Expr) ->
   {R1,_,_} =
@@ -134,7 +160,15 @@ insert_at_end(Syntax,Insert) ->
   {Body,EOF} = lists:splitwith(fun (F) -> case erl_syntax:type(F) of eof_marker -> false; _ -> true end end, Forms),
   ?forms([Body,Insert,EOF]).
 
-    
+
+var() -> ?var("_V"++integer_to_list(nextN())).
+% var(N) -> ?var("T"++integer_to_list(N)).
+nextN() ->
+  N1 = case erlang:get('#N') of undefined -> 1; N -> N end,
+  N2 = N1+1,
+  erlang:put('#N',N2),
+  N2.
+
 
 
 

@@ -5,4 +5,4 @@
               {applications,[]},
               {mod,[]},
               {env,[]},
-              {modules,[value_pt]}]}.
+              {modules,[test,value_pt]}]}.
