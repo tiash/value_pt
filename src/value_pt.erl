@@ -46,6 +46,8 @@ get_fields(Form,Fields) ->
     _ -> skip
   end.
 
+-record(ifdef, { value = undefined :: term(), update = replace :: update() }).
+-type update() :: immutable | repace | update | #ifdef{} | atom() | {module(),atom()}.
 -record(default, {value :: term()}).
 -record(field,  { name :: atom()
                 , getter :: atom()
@@ -53,6 +55,7 @@ get_fields(Form,Fields) ->
                 , setter :: atom()
                 , setter_public = false :: boolean()
                 , default = no_default :: no_default | #default{}
+                , update = #ifdef{update=replace} :: update()
                 }).
 field({Name,Opts}) when is_atom(Name), is_list(Opts) ->
   field_opts(#field{name=Name,getter=Name,setter=Name},Opts);
@@ -72,6 +75,8 @@ field_opts(Field,[{default,Value}|Opts]) ->
     Default=#default{} -> field_opts(Field#field{default=Default#default{value=Value}},Opts);
     no_default -> field_opts(Field#field{default=#default{value=Value}},Opts)
   end;
+field_opts(Field,[{immutable,true}|Opts]) -> field_opts(Field,[{update,immutable},setter_private,{setter,undefined}|Opts]);
+field_opts(Field,[{update,Update}|Opts]) -> field_opts(Field#field{update=Update},Opts);
 field_opts(Field,[Key | Opts]) when is_atom(Key) -> field_opts(Field,[{Key,true} | Opts]);
 field_opts(Field,[_|Opts]) -> field_opts(Field,Opts);
 field_opts(Field,[]) -> Field.
@@ -180,24 +185,43 @@ find_member(Name,Arity,Member=#member{name=Name,arity=Arity}) -> Member;
 find_member(_Name,_Arity,_) -> undefined.
 
 field_members(_Module,Fields) ->
-  [ [ erl_syntax:attribute(?atom(member), [ ?abstract(
-          {{F#field.getter,0},if F#field.getter_public -> [public]; true -> [private] end ++ [accessor,{mangle,false}]}
-      )])
+  [ [ case F#field.getter of
+        undefined -> [];
+        _ ->
+          erl_syntax:attribute(?atom(member), [ ?abstract(
+            {{F#field.getter,0},if F#field.getter_public -> [public]; true -> [private] end ++ [accessor,{mangle,false}]}
+          )])
+      end
     % , erl_syntax:attribute(?atom(member), [ ?tuple([
     %     erl_syntax:arity_qualifier(?atom(F#field.setter),?integer(1)),
     %     ?abstract(if F#field.setter_public -> [public]; true -> [private] end ++ [mutator,{mangle,false}])
     %   ])])
-    , erl_syntax:attribute(?atom(member), [ ?abstract(
-        {{F#field.setter,1},if F#field.setter_public -> [public]; true -> [private] end ++ [mutator,{mangle,false}]}
-      )])
+    , case F#field.setter of
+        undefined -> [];
+        _ ->
+          erl_syntax:attribute(?atom(member), [ ?abstract(
+            {{F#field.setter,1},if F#field.setter_public -> [public]; true -> [private] end ++ [mutator,{mangle,false}]}
+          )])
+      end
     ] || F <- Fields
-  ].
+  ] ++ [erl_syntax:attribute(?atom(member), [ ?abstract( {{update,1},[public,mutator,{mangle,false}]} ) ])].
 field_logic(Module,Fields) ->
-  [ [ ?suppress_unused(F#field.getter,1)
-    , field_getter(F,Module,Fields)
-    , ?suppress_unused(F#field.setter,2)
-    , field_setter(F,Module,Fields)
-    ] || F<-Fields ].
+  [ [ case F#field.getter of 
+        undefined -> [];
+        _ ->
+          [ ?suppress_unused(F#field.getter,1)
+          , field_getter(F,Module,Fields)
+          ]
+      end
+    , case F#field.setter of
+        undefined -> [];
+        _ ->
+          [ ?suppress_unused(F#field.setter,2)
+          , field_setter(F,Module,Fields)
+          ]
+      end
+    ] || F<-Fields ]
+  ++ [ update_logic(Module,Fields) ].
 field_getter(#field{name=Name,getter=Getter,default=Default},Module,_Fields) ->
   ?function(Getter,
   case Default of
@@ -224,6 +248,22 @@ member_exports(_Module,Members,_Fields) ->
   [ erl_syntax:attribute(?atom(export), [?list([erl_syntax:arity_qualifier(?atom(Name),?int(Arity+1))])])
     || #member{name=Name,arity=Arity,public=true} <- Members ].
 
+
+update_logic(Module,Fields) ->
+  VarSource = [ ?var("_Source_"++integer_to_list(I)) || I <- lists:seq(1,length(Fields)) ],
+  VarDest = [ ?var("_Dest_"++integer_to_list(I)) || I <- lists:seq(1,length(Fields)) ],
+  [ ?function(update, [ ?clause([ ?record(Module,[ ?field(F#field.name,V) || {F,V} <- lists:zip(Fields,VarSource) ])
+                                , ?record(Module,[ ?field(F#field.name,V) || {F,V} <- lists:zip(Fields,VarDest) ])
+                                ], none, [?record(Module, [ ?field(F#field.name,update_logic(F#field.update,S,D)) || {F,{S,D}} <- lists:zip(Fields,lists:zip(VarSource,VarDest)) ])])]) ].
+
+update_logic(immutable,_Source,Dest) -> Dest;
+update_logic(replace,Source,_Dest) -> Source;
+update_logic(update,Source,Dest) -> erl_syntax:application(Dest,?atom(update),[Source]);
+update_logic(#ifdef{value=Undef,update=Update},Source,Dest) ->
+  ?cases(Source,[?clause([?abstract(Undef)],none,[Dest]),?clause([?underscore],none,[update_logic(Update,Source,Dest)])]);
+update_logic({Mod,Fun},Source,Dest) when is_atom(Mod), is_atom(Fun) -> ?apply(Mod,Fun,[Source,Dest]);
+update_logic(Fun,Source,Dest) when is_atom(Fun) -> ?apply(Fun,[Source,Dest]).
+                               
 
 
 
