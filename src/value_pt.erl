@@ -135,44 +135,39 @@ new_this(Vars0) ->
   Vars1 = sets:add_element(This1,Vars0),
   {?var(This1),Vars1}.
 
-mangle_member_clause(Name,Arity,Mutator,Clause,Module,Members,Fields) -> 
-  Pattern1 = erl_syntax:clause_patterns(Clause) ++ [erl_syntax:variable('THIS')],
-  Guard1 = erl_syntax:clause_guard(Clause),
-  Body1 = erl_syntax:clause_body(Clause),
-  Vars0 = erl_syntax_lib:variables(Clause),
-  {This1,Vars1} = new_this(Vars0),
-  FoldFun = fun (Expr,{This,Vars}) -> mangle_expr(Expr,{This,Vars},Name,Arity,Mutator,Module,Members,Fields) end,
-  {Pattern2,{This2,Vars2}} = syntax_fold(FoldFun,Pattern1,{This1,Vars1}),
-  {Guard2,{This3,Vars3}} = syntax_fold(FoldFun,Guard1,{This2,Vars2}),
-  {Body2,{This4,_Vars4}} = syntax_fold(FoldFun,Body1,{This3,Vars3}),
-  Return = case Mutator of true -> [This4]; _ -> [] end, 
-  erl_syntax:clause(Pattern2,Guard2,Body2 ++ Return).
-
-mangle_expr(Expr,{This,Vars},_ThisName,_ThisArity,_ThisMutator,_ThisModule,Members,_Fields) ->
-  case erl_syntax:type(Expr) of
-    variable -> case erl_syntax:variable_name(Expr) of 'THIS' -> {done,This,{This,Vars}}; _ -> skip end;
-    application ->
-      Operator = erl_syntax:application_operator(Expr),
-      Arguments = erl_syntax:application_arguments(Expr),
-      case erl_syntax:type(Operator) of
-        atom ->
-          Name = erl_syntax:atom_value(Operator),
-          Arity = length(Arguments),
-          case find_member(Name,Arity,Members) of
-            #member{mutator=Mutator} ->
-              NApply = erl_syntax:application(Operator,Arguments++[This]),
-              case Mutator of
-                true ->
-                  {NThis,NVars} = new_this(Vars),
-                  {erl_syntax:match_expr(NThis,NApply),{NThis,NVars}};
-                _ -> {NApply,{This,Vars}}
-              end;
-            _ -> skip
-          end;
-        _ -> skip
-      end;
-    _ -> skip
-  end.
+mangle_member_clause(_Name,_Arity,Mutator,Clause,_Module,Members,_Fields) -> 
+  Pattern = erl_syntax:clause_patterns(Clause) ++ [erl_syntax:variable('THIS')],
+  Guard = erl_syntax:clause_guard(Clause),
+  Body = erl_syntax:clause_body(Clause) ++ case Mutator of true -> [erl_syntax:variable('THIS')]; _ -> [] end,
+  {NewClause,_} = erl_syntax_lib:mapfold (
+      fun(Expr,{This,Vars}) ->
+        case erl_syntax:type(Expr) of
+          variable -> case erl_syntax:variable_name(Expr) of 'THIS' -> {This,{This,Vars}}; _ -> {Expr,{This,Vars}} end;
+          application ->
+            Operator = erl_syntax:application_operator(Expr),
+            Arguments = erl_syntax:application_arguments(Expr),
+            case erl_syntax:type(Operator) of
+              atom ->
+                FunName = erl_syntax:atom_value(Operator),
+                FunArity = length(Arguments),
+                case find_member(FunName,FunArity,Members) of
+                  Fun = #member{} ->
+                    NApply = erl_syntax:application(Operator,Arguments++[This]),
+                    case Mutator andalso Fun#member.mutator of
+                      true ->
+                        {NThis,NVars} = new_this(Vars),
+                        {erl_syntax:match_expr(NThis,NApply),{NThis,NVars}};
+                      _ -> {NApply,{This,Vars}}
+                    end;
+                  _ -> {Expr,{This,Vars}}
+                end;
+              _ -> {Expr,{This,Vars}}
+            end;
+          _ -> {Expr,{This,Vars}}
+        end
+      end , new_this(erl_syntax_lib:variables(Clause))
+          , erl_syntax:clause(Pattern,Guard,Body)),
+  NewClause.
   
 
 find_member(_Name,_Arity,[]) -> undefined;
