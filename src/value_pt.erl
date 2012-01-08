@@ -145,18 +145,31 @@ new_this(Vars0) -> new_var("_THIS_",Vars0).
 mangle_member_clause(Mutator,Clause,Members) -> 
   Pattern = erl_syntax:clause_patterns(Clause) ++ [erl_syntax:variable('THIS')],
   Guard = erl_syntax:clause_guard(Clause),
-  Body = erl_syntax:clause_body(Clause) ++ case Mutator of true -> [erl_syntax:variable('THIS')]; _ -> [] end,
+  Body = erl_syntax:clause_body(Clause),
   {NewClause,_} = mangle_member_expr( Members
+                                    , case Mutator of true -> mutator; _ -> true end
                                     , erl_syntax:clause(Pattern,Guard,Body)
                                     , new_this(erl_syntax_lib:variables(Clause))),
   NewClause.
 
-mangle_member_expr_fold(Members,Expr,State) ->
-  erl_syntax_lib:mapfold_subtrees(fun (E,S) -> mangle_member_expr(Members,E,S) end,State,Expr).
+% mangle_member_expr_fold(_Members,_Tail,none,State) -> {none,State};
+mangle_member_expr_fold(Members,Tail,Expr,State1) ->
+  {Expr2,State2={This2,_}} = erl_syntax_lib:mapfold_subtrees(fun (E,S) -> mangle_member_expr(Members,false,E,S) end,State1,Expr),
+  case Tail of
+    mutator -> {erl_syntax:block_expr([Expr2,This2]),State2};
+    _ -> {Expr2,State2}
+  end.
 
-mangle_member_expr(Members,Exprs,State) when is_list(Exprs) ->
-  lists:mapfoldl(fun (E,S) -> mangle_member_expr(Members,E,S) end, State, Exprs);
-mangle_member_expr(Members,Expr,State1={This1,_}) ->
+mangle_member_expr(_Members,_Tail,none,State) -> {none,State};
+mangle_member_expr(_Members,_Tail,[],State) -> {[],State};
+mangle_member_expr(Members,Tail,[Expr],State1) when Expr=/=none -> 
+  {NExpr,State2} = mangle_member_expr(Members,Tail,Expr,State1),
+  {[NExpr],State2};
+mangle_member_expr(Members,Tail,[Expr|Exprs],State1) -> 
+  {NExpr,State2} = mangle_member_expr(Members,false,Expr,State1),
+  {NExprs,State3} = mangle_member_expr(Members,Tail,Exprs,State2),
+  {[NExpr|NExprs],State3};
+mangle_member_expr(Members,Tail,Expr,State1={This1,_}) ->
   case erl_syntax:type(Expr) of
     variable -> case erl_syntax:variable_name(Expr) of 'THIS' -> {This1,State1}; _ -> {Expr,State1} end;
     application ->
@@ -168,68 +181,100 @@ mangle_member_expr(Members,Expr,State1={This1,_}) ->
           FunArity = length(Arguments),
           case find_member(FunName,FunArity,Members) of
             Fun = #member{} ->
-              {NApply,State2={_,Vars2}} = mangle_member_expr_fold(Members,erl_syntax:application(Operator,Arguments++[?var('THIS')]),State1),
+              {NApply,State2={_,Vars2}} = mangle_member_expr_fold(Members,false,erl_syntax:application(Operator,Arguments++[?var('THIS')]),State1),
               case Fun#member.mutator of
                 true ->
-                  State3={This3,_} = new_this(Vars2),
-                  {erl_syntax:match_expr(This3,NApply),State3};
+                  case Tail of
+                    false ->
+                      State3={This3,_} = new_this(Vars2),
+                      {erl_syntax:match_expr(This3,NApply),State3};
+                    _ -> {NApply,State2}
+                  end;
                 _ -> {NApply,State2}
               end;
-            _ -> mangle_member_expr_fold(Members,Expr,State1)
+            _ -> mangle_member_expr_fold(Members,Tail,Expr,State1)
           end;
-        _ -> mangle_member_expr_fold(Members,Expr,State1)
+        _ -> mangle_member_expr_fold(Members,Tail,Expr,State1)
       end;
     case_expr ->
-      {Arg,State2} = mangle_member_expr(Members,erl_syntax:case_expr_argument(Expr),State1),
-      {Cases,State3} = mangle_member_exprs_clauses(Members,erl_syntax:case_expr_clauses(Expr),State2),
+      {Arg,State2} = mangle_member_expr(Members,false,erl_syntax:case_expr_argument(Expr),State1),
+      {Cases,State3} = mangle_member_exprs_clauses(Members,Tail,erl_syntax:case_expr_clauses(Expr),State2),
       {erl_syntax:case_expr(Arg,Cases),State3};
     if_expr ->
-      {Cases,State2} = mangle_member_exprs_clauses(Members,erl_syntax:if_expr_clauses(Expr),State1),
+      {Cases,State2} = mangle_member_exprs_clauses(Members,Tail,erl_syntax:if_expr_clauses(Expr),State1),
       {erl_syntax:if_expr(Cases),State2};
     receive_expr ->
-      {[TimeOut|Cases],State2} = mangle_member_exprs_clauses(Members,[?clause([erl_syntax:receive_expr_timeout(Expr)],none,erl_syntax:receive_expr_action(Expr))|erl_syntax:receive_expr_clauses(Expr)],State1),
+      {[TimeOut|Cases],State2} = mangle_member_exprs_clauses(Members,Tail,[?clause([erl_syntax:receive_expr_timeout(Expr)],none,erl_syntax:receive_expr_action(Expr))|erl_syntax:receive_expr_clauses(Expr)],State1),
       {erl_syntax:receive_expr(Cases,hd(erl_syntax:clause_patterns(TimeOut)),erl_syntax:clause_body(TimeOut)),State2};
     try_expr ->
-      {Body,State2} = mangle_member_expr(Members,erl_syntax:try_expr_body(Expr),State1),
-      {Cases1,{This3,Vars3}} = mangle_member_exprs_clauses_1(Members,erl_syntax:try_expr_clauses(Expr),State2),
-      {Handlers1,{_,Vars4}} = mangle_member_exprs_clauses_1(Members,erl_syntax:try_expr_handlers(Expr),{This1,Vars3}),
-      {HandlersCases,State5} = mangle_member_exprs_clauses_2(Cases1++Handlers1,{This3,Vars4}),
-      {Cases2,Handlers2} = lists:split(length(Cases1),HandlersCases),
-      {erl_syntax:try_expr(Body,Cases2,Handlers2,erl_syntax:try_expr_after(Expr)),State5};
-    implicit_fun -> Expr; %% Functions can not manipulate this...
-    _ -> erl_syntax_lib:mapfold_subtrees(fun (E,S) -> mangle_member_expr(Members,E,S) end, State1,Expr)
+      Body0 = erl_syntax:try_expr_body(Expr),
+      Cases0 = erl_syntax:try_expr_clauses(Expr),
+      Handlers0 = erl_syntax:try_expr_handlers(Expr),
+      After0 = erl_syntax:try_expr_after(Expr),
+      case Cases0 of
+        [] = Cases2 ->
+          {Handlers2,{This2,Vars2}} = mangle_member_exprs_clauses(Members,Tail,Handlers0,State1),
+          {Body1,{This3,Vars3}} = mangle_member_expr(Members,Tail,Body0,{This1,Vars2}),
+          {Body2,{ThisX,VarsX}} = mangle_member_exprs_enure_this(Tail,Body1,This3,{This2,Vars3});
+        _ ->
+          {Body2,{This2,Vars2}} = mangle_member_expr(Members,false,Body0,State1),
+          {Cases1,{_,Vars3}} = mangle_member_exprs_clauses_1(Members,Tail,Cases0,{This2,Vars2}),
+          {Handlers1,State4} = mangle_member_exprs_clauses_1(Members,Tail,Handlers0,{This1,Vars3}),
+          {HandlersCases,{ThisX,VarsX}} = mangle_member_exprs_clauses_2(Tail,Cases1++Handlers1,State4),
+          {Cases2,Handlers2} = lists:split(length(Cases1),HandlersCases)
+      end,
+      {After2,{_,VarsY}} = mangle_member_expr(Members,true,After0,{This1,VarsX}),
+      {erl_syntax:try_expr(Body2,Cases2,Handlers2,After2),{ThisX,VarsY}};
+    implicit_fun -> {Expr,State1}; %% Functions can not manipulate this...
+    clause ->
+      {Pattern,State2} = mangle_member_expr(Members,false,erl_syntax:clause_patterns(Expr),State1),
+      {Guard,State3} = mangle_member_expr(Members,false,erl_syntax:clause_guard(Expr),State2),
+      {Body,State4} = mangle_member_expr(Members,Tail,erl_syntax:clause_body(Expr),State3),
+      {erl_syntax:clause(Pattern,Guard,Body),State4};
+    _ -> mangle_member_expr_fold(Members,Tail,Expr,State1)
   end.
 
-mangle_member_exprs_clauses(Members,OCases,State1) ->
-  {Cases,State2} = mangle_member_exprs_clauses_1(Members,OCases,State1),
-  mangle_member_exprs_clauses_2(Cases,State2).
+mangle_member_exprs_clauses(Members,Tail,OCases,State1) ->
+  {Cases,State2} = mangle_member_exprs_clauses_1(Members,Tail,OCases,State1),
+  mangle_member_exprs_clauses_2(Tail,Cases,State2).
 
-mangle_member_exprs_clauses_1(_Members,[],State1) -> {[],State1};
-mangle_member_exprs_clauses_1(Members,OCases,{This1,Vars1}) ->
+mangle_member_exprs_clauses_1(_Members,_Tail,[],State1) -> {[],State1};
+mangle_member_exprs_clauses_1(Members,Tail,OCases,{This1,Vars1}) ->
   {Cases=[{_,This2}|_],Vars2} =
       lists:mapfoldl(fun (C1,VarsN) ->
-        {C2,{ThisM,VarsM}} = mangle_member_expr(Members,C1,{This1,VarsN}),
+        {C2,{ThisM,VarsM}} = mangle_member_expr(Members,Tail,C1,{This1,VarsN}),
         {{C2,ThisM},VarsM}
       end, Vars1, OCases),
   {Cases,{This2,Vars2}}.
-mangle_member_exprs_clauses_2(Cases,{This1,Vars1}) ->
+mangle_member_exprs_clauses_2(Tail,Cases,{This1,Vars1}) ->
   case lists:all(fun ({_,T}) -> T==This1 end,Cases) of
     true -> {[ C || {C,_} <- Cases ],{This1,Vars1}};
     _ ->
       {This2,Vars2} = new_this(Vars1),
       {NCases,Vars3} = lists:mapfoldl(fun ({Clause,OThis},VarsN) ->
             ?debug(Clause),
-            {Body,VarsM} = mangle_member_exprs_enure_this(erl_syntax:clause_body(Clause),OThis,{This2,VarsN}),
+            {Body,{_,VarsM}} = ?debug(mangle_member_exprs_enure_this(?debug(Tail),?debug(erl_syntax:clause_body(Clause)),?debug(OThis),?debug({This2,VarsN}))),
             {erl_syntax:clause(erl_syntax:clause_patterns(Clause),erl_syntax:clause_guard(Clause),Body),VarsM}
           end,Vars2,Cases),
       {NCases,{This2,Vars3}}
   end.
 
   
-mangle_member_exprs_enure_this(Exprs,OThis,{NThis,Vars1}) ->
+mangle_member_exprs_enure_this(Tail,Exprs,OThis,State1={NThis,_}) ->
   {Before,[Last]} = lists:split(length(Exprs)-1,Exprs),
+  case erl_syntax:type(Last) of
+    match_expr ->
+      case erl_syntax:match_expr_pattern(Last) of
+        OThis -> {Before++[?match(NThis,erl_syntax:match_expr_body(Last))], State1};
+        _ -> mangle_member_exprs_enure_this_(Tail,Before,Last,OThis,State1)
+      end;
+    _ -> mangle_member_exprs_enure_this_(Tail,Before,Last,OThis,State1)
+  end.
+mangle_member_exprs_enure_this_(false,Before,Last,OThis,{NThis,Vars1}) ->
   {Var,Vars2} = new_var(Vars1),
-  {Before ++ [?match(Var,Last),?match(NThis,OThis),Var],Vars2}.
+  {Before ++ [?match(Var,Last),?match(NThis,OThis),Var],{NThis,Vars2}};
+mangle_member_exprs_enure_this_(_Tail,Before,Last,_OThis,State1={_,_}) ->
+  {Before ++ [Last],State1}.
 
       
   
