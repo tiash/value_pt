@@ -2,7 +2,7 @@
              [{description,"Parse transform for parametrised module style value modules"},
               {vsn,"1.0"},
               {registered,[]},
-              {applications,[]},
+              {applications,[kernel,stdlib,compiler,syntax_tool]},
               {mod,[]},
-              {env,[]},
-              {modules,[test,value_pt]}]}.
+              {modules,[value_pt]},
+              {env,[]}]}.
