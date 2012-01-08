@@ -141,7 +141,7 @@ mangleMembers(Members,Forms) ->
 
 newVar(Prefix,Vars0) when is_atom(Prefix) -> newVar(atom_to_list(Prefix),Vars0);
 newVar(Prefix,Vars0) ->
-  Var1 = erl_syntax_lib:newVariable_name(fun (N) -> list_to_atom(Prefix++integer_to_list(N)) end,Vars0),
+  Var1 = erl_syntax_lib:new_variable_name(fun (N) -> list_to_atom(Prefix++integer_to_list(N)) end,Vars0),
   Vars1 = sets:add_element(Var1,Vars0),
   {?var(Var1),Vars1}.
 newVar(Vars0) -> newVar("_VAR_",Vars0).
