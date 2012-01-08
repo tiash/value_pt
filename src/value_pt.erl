@@ -18,7 +18,7 @@ parse_transform(Forms0,_Options) ->
   Forms4 = insert_at_end(Forms3, initLogic(Module,Fields)),
   Forms5 = insert_at_end(Forms4, fieldLogic(Module,Fields)),
   Forms6 = insert_in_head(Forms5, memberExports(Module,Members,Fields)),
-  Forms7 = syntax_fold(fun (E) -> mangleMembers(E,Members) end,Forms6),
+  Forms7 = mangleMembers(Members,Forms6),
   ?debug_pt(Forms7),
   erl_syntax:revert_forms(Forms7).
 
@@ -29,9 +29,9 @@ getModule(Forms) ->
             attribute ->
               case erl_syntax_lib:analyze_attribute(E) of
                 {module,Module} -> Accum++[Module];
-                _ -> done
+                _ -> Accum
               end;
-            _ -> skip
+            _ -> Accum
           end
         end,[],Forms) of
     [Module] -> Module
@@ -44,9 +44,9 @@ getFields(Forms) ->
             attribute ->
               case erl_syntax_lib:analyze_attribute(E) of
                 {field,{field,Field}} -> Accum++[field(Field)];
-                _ -> done
+                _ -> Accum
               end;
-            _ -> skip
+            _ -> Accum
           end
         end,[],Forms).
 
@@ -91,10 +91,10 @@ getMembers(Forms) ->
           case erl_syntax:type(E) of
             attribute ->
               case erl_syntax_lib:analyze_attribute(E) of
-                {field,{field,Member}} -> Accum++[member(Member)];
-                _ -> done
+                {member,{member,Member}} -> Accum++[member(Member)];
+                _ -> Accum
               end;
-            _ -> skip
+            _ -> Accum
           end
         end,[],Forms).
 
@@ -121,21 +121,23 @@ module_record(Module,Fields) ->
           #default{value=Val} -> ?abstract(Val)
         end)
     || F<-Fields ])]).
-
-mangleMembers(Form,Members) ->
-  case erl_syntax:type(Form) of
-    function ->
-      Function = erl_syntax:function_name(Form),
-      Name =  erl_syntax:atom_value(Function),
-      Arity = erl_syntax:function_arity(Form),
-      Clauses = erl_syntax:function_clauses(Form),
-      case findMember(Name,Arity,Members) of
-        #member{mangle=true,mutator=Mutator} ->
-          {done, erl_syntax:function(Function, [ mangleMemberClause(Mutator,C,Members) || C <- Clauses ]) };
-        _ -> skip
-      end;
-    _ -> skip
-  end.
+mangleMembers(Members,Forms) ->
+  erl_syntax_lib:map_subtrees(
+      fun (Form) ->
+        case erl_syntax:type(Form) of
+          function ->
+            Function = erl_syntax:function_name(Form),
+            Name =  erl_syntax:atom_value(Function),
+            Arity = erl_syntax:function_arity(Form),
+            Clauses = erl_syntax:function_clauses(Form),
+            case findMember(Name,Arity,Members) of
+              #member{mangle=true,mutator=Mutator} ->
+                erl_syntax:function(Function, [ mangleMemberClause(Mutator,C,Members) || C <- Clauses ]);
+              _ -> Form
+            end;
+          _ -> Form
+        end
+      end,Forms).
 
 newVar(Prefix,Vars0) when is_atom(Prefix) -> newVar(atom_to_list(Prefix),Vars0);
 newVar(Prefix,Vars0) ->
@@ -157,7 +159,6 @@ mangleMemberClause(Mutator,Clause,Members) ->
                                     , newSelf(erl_syntax_lib:variables(Clause))),
   NewClause.
 
-% mangleMemberExpr_fold(_Members,_Tail,none,State) -> {none,State};
 mangleMemberExprFold(Members,Tail,Expr,State1) ->
   {Expr2,State2={Self2,_}} = erl_syntax_lib:mapfold_subtrees(fun (E,S) -> mangleMemberExpr(Members,false,E,S) end,State1,Expr),
   case Tail of
