@@ -10,43 +10,45 @@
 
 parse_transform(Forms0,_Options) ->
   Forms1 = ?forms(Forms0),
-  {_,Module} = 
-    syntax_fold(fun get_module/2, Forms1,'_'),
-  {_,Fields} = syntax_fold(fun get_fields/2,Forms1,[]),
-  {_,Members0} = syntax_fold(fun get_members/2,Forms1,[]),
-  case {Fields,Members0} of
-    {[],[]} -> Forms0;
-    _ -> 
-      Forms2 = insert_in_head(Forms1, field_members(Module,Fields)),
-      {_,Members} = syntax_fold(fun get_members/2,Forms2,[]),
-      Forms3 = insert_at_top(Forms2, module_record(Module,Fields)),
-      Forms4 = insert_at_end(Forms3, init_logic(Module,Fields)),
-      Forms5 = insert_at_end(Forms4, field_logic(Module,Fields)),
-      Forms6 = insert_in_head(Forms5, member_exports(Module,Members,Fields)),
-      Forms7 = syntax_fold(fun (E) -> mangle_members(E,Members) end,Forms6),
-      ?debug_pt(Forms7),
-      erl_syntax:revert_forms(Forms7)
+  Module = getModule(Forms1),
+  Fields = getFields(Forms1),
+  Forms2 = insert_in_head(Forms1, fieldMembers(Module,Fields)),
+  Members = getMembers(Forms2),
+  Forms3 = insert_at_top(Forms2, module_record(Module,Fields)),
+  Forms4 = insert_at_end(Forms3, initLogic(Module,Fields)),
+  Forms5 = insert_at_end(Forms4, fieldLogic(Module,Fields)),
+  Forms6 = insert_in_head(Forms5, memberExports(Module,Members,Fields)),
+  Forms7 = syntax_fold(fun (E) -> mangleMembers(E,Members) end,Forms6),
+  ?debug_pt(Forms7),
+  erl_syntax:revert_forms(Forms7).
+
+getModule(Forms) ->
+  case erl_syntax_lib:fold(
+        fun (E,Accum) ->
+          case erl_syntax:type(E) of
+            attribute ->
+              case erl_syntax_lib:analyze_attribute(E) of
+                {module,Module} -> Accum++[Module];
+                _ -> done
+              end;
+            _ -> skip
+          end
+        end,[],Forms) of
+    [Module] -> Module
   end.
 
-get_module(Form,'_') ->
-  case erl_syntax:type(Form) of
-    attribute ->
-      case erl_syntax_lib:analyze_attribute(Form) of
-        {module,Module} -> {done,Module};
-        _ -> done
-      end;
-    _ -> skip
-  end;
-get_module(_,_) -> skip.
-get_fields(Form,Fields) ->
-  case erl_syntax:type(Form) of
-    attribute ->
-      case analyze_attribute(Form) of
-        {field,Field} -> {done,Fields ++ [ field(Field) ]};
-        _ -> done
-      end;
-    _ -> skip
-  end.
+getFields(Forms) ->
+  erl_syntax_lib:fold(
+        fun (E,Accum) ->
+          case erl_syntax:type(E) of
+            attribute ->
+              case erl_syntax_lib:analyze_attribute(E) of
+                {field,{field,Field}} -> Accum++[field(Field)];
+                _ -> done
+              end;
+            _ -> skip
+          end
+        end,[],Forms).
 
 -record(ifdef, { value = undefined :: term(), update = replace :: update() }).
 -type update() :: immutable | repace | update | #ifdef{} | atom() | {module(),atom()}.
@@ -83,15 +85,18 @@ field_opts(Field,[Key | Opts]) when is_atom(Key) -> field_opts(Field,[{Key,true}
 field_opts(Field,[_|Opts]) -> field_opts(Field,Opts);
 field_opts(Field,[]) -> Field.
 
-get_members(Form,Members) ->
-  case erl_syntax:type(Form) of
-    attribute ->
-      case analyze_attribute(Form) of
-        {member,Member} -> {done, Members ++ [ member(Member) ] };
-        _ -> done
-      end;
-    _ -> skip
-  end.
+getMembers(Forms) ->
+  erl_syntax_lib:fold(
+        fun (E,Accum) ->
+          case erl_syntax:type(E) of
+            attribute ->
+              case erl_syntax_lib:analyze_attribute(E) of
+                {field,{field,Member}} -> Accum++[member(Member)];
+                _ -> done
+              end;
+            _ -> skip
+          end
+        end,[],Forms).
 
 -record(member,{name :: atom(), arity :: pos_integer(), public = false :: boolean(), mutator = false :: boolean(), mangle = true :: boolean() }).
 member({{Name,Arity},Opts}) when is_atom(Name), is_integer(Arity), is_list(Opts) ->
@@ -117,59 +122,59 @@ module_record(Module,Fields) ->
         end)
     || F<-Fields ])]).
 
-mangle_members(Form,Members) ->
+mangleMembers(Form,Members) ->
   case erl_syntax:type(Form) of
     function ->
       Function = erl_syntax:function_name(Form),
       Name =  erl_syntax:atom_value(Function),
       Arity = erl_syntax:function_arity(Form),
       Clauses = erl_syntax:function_clauses(Form),
-      case find_member(Name,Arity,Members) of
+      case findMember(Name,Arity,Members) of
         #member{mangle=true,mutator=Mutator} ->
-          {done, erl_syntax:function(Function, [ mangle_member_clause(Mutator,C,Members) || C <- Clauses ]) };
+          {done, erl_syntax:function(Function, [ mangleMemberClause(Mutator,C,Members) || C <- Clauses ]) };
         _ -> skip
       end;
     _ -> skip
   end.
 
-new_var(Prefix,Vars0) when is_atom(Prefix) -> new_var(atom_to_list(Prefix),Vars0);
-new_var(Prefix,Vars0) ->
-  Var1 = erl_syntax_lib:new_variable_name(fun (N) -> list_to_atom(Prefix++integer_to_list(N)) end,Vars0),
+newVar(Prefix,Vars0) when is_atom(Prefix) -> newVar(atom_to_list(Prefix),Vars0);
+newVar(Prefix,Vars0) ->
+  Var1 = erl_syntax_lib:newVariable_name(fun (N) -> list_to_atom(Prefix++integer_to_list(N)) end,Vars0),
   Vars1 = sets:add_element(Var1,Vars0),
   {?var(Var1),Vars1}.
-new_var(Vars0) -> new_var("_VAR_",Vars0).
-new_this(Vars0) -> new_var("_THIS_",Vars0).
+newVar(Vars0) -> newVar("_VAR_",Vars0).
+newThis(Vars0) -> newVar("_THIS_",Vars0).
 
 
 
-mangle_member_clause(Mutator,Clause,Members) -> 
+mangleMemberClause(Mutator,Clause,Members) -> 
   Pattern = erl_syntax:clause_patterns(Clause) ++ [erl_syntax:variable('THIS')],
   Guard = erl_syntax:clause_guard(Clause),
   Body = erl_syntax:clause_body(Clause),
-  {NewClause,_} = mangle_member_expr( Members
+  {NewClause,_} = mangleMemberExpr( Members
                                     , case Mutator of true -> mutator; _ -> true end
                                     , erl_syntax:clause(Pattern,Guard,Body)
-                                    , new_this(erl_syntax_lib:variables(Clause))),
+                                    , newThis(erl_syntax_lib:variables(Clause))),
   NewClause.
 
-% mangle_member_expr_fold(_Members,_Tail,none,State) -> {none,State};
-mangle_member_expr_fold(Members,Tail,Expr,State1) ->
-  {Expr2,State2={This2,_}} = erl_syntax_lib:mapfold_subtrees(fun (E,S) -> mangle_member_expr(Members,false,E,S) end,State1,Expr),
+% mangleMemberExpr_fold(_Members,_Tail,none,State) -> {none,State};
+mangleMemberExprFold(Members,Tail,Expr,State1) ->
+  {Expr2,State2={This2,_}} = erl_syntax_lib:mapfold_subtrees(fun (E,S) -> mangleMemberExpr(Members,false,E,S) end,State1,Expr),
   case Tail of
     mutator -> {erl_syntax:block_expr([Expr2,This2]),State2};
     _ -> {Expr2,State2}
   end.
 
-mangle_member_expr(_Members,_Tail,none,State) -> {none,State};
-mangle_member_expr(_Members,_Tail,[],State) -> {[],State};
-mangle_member_expr(Members,Tail,[Expr],State1) when Expr=/=none -> 
-  {NExpr,State2} = mangle_member_expr(Members,Tail,Expr,State1),
+mangleMemberExpr(_Members,_Tail,none,State) -> {none,State};
+mangleMemberExpr(_Members,_Tail,[],State) -> {[],State};
+mangleMemberExpr(Members,Tail,[Expr],State1) when Expr=/=none -> 
+  {NExpr,State2} = mangleMemberExpr(Members,Tail,Expr,State1),
   {[NExpr],State2};
-mangle_member_expr(Members,Tail,[Expr|Exprs],State1) -> 
-  {NExpr,State2} = mangle_member_expr(Members,false,Expr,State1),
-  {NExprs,State3} = mangle_member_expr(Members,Tail,Exprs,State2),
+mangleMemberExpr(Members,Tail,[Expr|Exprs],State1) -> 
+  {NExpr,State2} = mangleMemberExpr(Members,false,Expr,State1),
+  {NExprs,State3} = mangleMemberExpr(Members,Tail,Exprs,State2),
   {[NExpr|NExprs],State3};
-mangle_member_expr(Members,Tail,Expr,State1={This1,Vars1}) ->
+mangleMemberExpr(Members,Tail,Expr,State1={This1,Vars1}) ->
   case erl_syntax:type(Expr) of
     variable -> case erl_syntax:variable_name(Expr) of 'THIS' -> {This1,State1}; _ -> {Expr,State1} end;
     application ->
@@ -179,32 +184,32 @@ mangle_member_expr(Members,Tail,Expr,State1={This1,Vars1}) ->
         atom ->
           FunName = erl_syntax:atom_value(Operator),
           FunArity = length(Arguments),
-          case find_member(FunName,FunArity,Members) of
+          case findMember(FunName,FunArity,Members) of
             Fun = #member{} ->
-              {NApply,State2={_,Vars2}} = mangle_member_expr_fold(Members,false,erl_syntax:application(Operator,Arguments++[?var('THIS')]),State1),
+              {NApply,State2={_,Vars2}} = mangleMemberExprFold(Members,false,erl_syntax:application(Operator,Arguments++[?var('THIS')]),State1),
               case Fun#member.mutator of
                 true ->
                   case Tail of
                     false ->
-                      State3={This3,_} = new_this(Vars2),
+                      State3={This3,_} = newThis(Vars2),
                       {erl_syntax:match_expr(This3,NApply),State3};
                     _ -> {NApply,State2}
                   end;
                 _ -> {NApply,State2}
               end;
-            _ -> mangle_member_expr_fold(Members,Tail,Expr,State1)
+            _ -> mangleMemberExprFold(Members,Tail,Expr,State1)
           end;
-        _ -> mangle_member_expr_fold(Members,Tail,Expr,State1)
+        _ -> mangleMemberExprFold(Members,Tail,Expr,State1)
       end;
     case_expr ->
-      {Arg,State2} = mangle_member_expr(Members,false,erl_syntax:case_expr_argument(Expr),State1),
-      {Cases,State3} = mangle_member_exprs_clauses(Members,Tail,erl_syntax:case_expr_clauses(Expr),State2),
+      {Arg,State2} = mangleMemberExpr(Members,false,erl_syntax:case_expr_argument(Expr),State1),
+      {Cases,State3} = mangleMemberExprsClauses(Members,Tail,erl_syntax:case_expr_clauses(Expr),State2),
       {erl_syntax:case_expr(Arg,Cases),State3};
     if_expr ->
-      {Cases,State2} = mangle_member_exprs_clauses(Members,Tail,erl_syntax:if_expr_clauses(Expr),State1),
+      {Cases,State2} = mangleMemberExprsClauses(Members,Tail,erl_syntax:if_expr_clauses(Expr),State1),
       {erl_syntax:if_expr(Cases),State2};
     receive_expr ->
-      {[TimeOut|Cases],State2} = mangle_member_exprs_clauses(Members,Tail,[?clause([erl_syntax:receive_expr_timeout(Expr)],none,erl_syntax:receive_expr_action(Expr))|erl_syntax:receive_expr_clauses(Expr)],State1),
+      {[TimeOut|Cases],State2} = mangleMemberExprsClauses(Members,Tail,[?clause([erl_syntax:receive_expr_timeout(Expr)],none,erl_syntax:receive_expr_action(Expr))|erl_syntax:receive_expr_clauses(Expr)],State1),
       {erl_syntax:receive_expr(Cases,hd(erl_syntax:clause_patterns(TimeOut)),erl_syntax:clause_body(TimeOut)),State2};
     try_expr ->
       Body0 = erl_syntax:try_expr_body(Expr),
@@ -213,23 +218,23 @@ mangle_member_expr(Members,Tail,Expr,State1={This1,Vars1}) ->
       After0 = erl_syntax:try_expr_after(Expr),
       case Cases0 of
         [] = Cases2 ->
-          {Handlers2,{This2,Vars2}} = mangle_member_exprs_clauses(Members,Tail,Handlers0,State1),
-          {Body1,{This3,Vars3}} = mangle_member_expr(Members,Tail,Body0,{This1,Vars2}),
-          {Body2,{ThisX,VarsX}} = mangle_member_exprs_enure_this(Tail,Body1,This3,{This2,Vars3});
+          {Handlers2,{This2,Vars2}} = mangleMemberExprsClauses(Members,Tail,Handlers0,State1),
+          {Body1,{This3,Vars3}} = mangleMemberExpr(Members,Tail,Body0,{This1,Vars2}),
+          {Body2,{ThisX,VarsX}} = mangleMemberExprsEnsureThis(Tail,Body1,This3,{This2,Vars3});
         _ ->
-          {Body2,{This2,Vars2}} = mangle_member_expr(Members,false,Body0,State1),
-          {Cases1,{_,Vars3}} = mangle_member_exprs_clauses_1(Members,Tail,Cases0,{This2,Vars2}),
-          {Handlers1,State4} = mangle_member_exprs_clauses_1(Members,Tail,Handlers0,{This1,Vars3}),
-          {HandlersCases,{ThisX,VarsX}} = mangle_member_exprs_clauses_2(Tail,Cases1++Handlers1,State4),
+          {Body2,{This2,Vars2}} = mangleMemberExpr(Members,false,Body0,State1),
+          {Cases1,{_,Vars3}} = mangleMemberExprsClauses1(Members,Tail,Cases0,{This2,Vars2}),
+          {Handlers1,State4} = mangleMemberExprsClauses1(Members,Tail,Handlers0,{This1,Vars3}),
+          {HandlersCases,{ThisX,VarsX}} = mangleMemberExprsClauses2(Tail,Cases1++Handlers1,State4),
           {Cases2,Handlers2} = lists:split(length(Cases1),HandlersCases)
       end,
-      {After2,{_,VarsY}} = mangle_member_expr(Members,true,After0,{This1,VarsX}),
+      {After2,{_,VarsY}} = mangleMemberExpr(Members,true,After0,{This1,VarsX}),
       {erl_syntax:try_expr(Body2,Cases2,Handlers2,After2),{ThisX,VarsY}};
     implicit_fun -> {Expr,State1}; %% Functions can not manipulate 'THIS'...
     clause ->
-      {Pattern,State2} = mangle_member_expr(Members,false,erl_syntax:clause_patterns(Expr),State1),
-      {Guard,State3} = mangle_member_expr(Members,false,erl_syntax:clause_guard(Expr),State2),
-      {Body,State4} = mangle_member_expr(Members,Tail,erl_syntax:clause_body(Expr),State3),
+      {Pattern,State2} = mangleMemberExpr(Members,false,erl_syntax:clause_patterns(Expr),State1),
+      {Guard,State3} = mangleMemberExpr(Members,false,erl_syntax:clause_guard(Expr),State2),
+      {Body,State4} = mangleMemberExpr(Members,Tail,erl_syntax:clause_body(Expr),State3),
       {erl_syntax:clause(Pattern,Guard,Body),State4};
     match_expr -> 
       Left = erl_syntax:match_expr_pattern(Expr),
@@ -240,75 +245,75 @@ mangle_member_expr(Members,Tail,Expr,State1={This1,Vars1}) ->
             'THIS' ->
               case Tail of
                 false ->
-                  {This2,Vars2} = new_this(Vars1),
-                  {NExpr,{_,Vars3}} = mangle_member_expr(Members,false,Right,{This1,Vars2}),
+                  {This2,Vars2} = newThis(Vars1),
+                  {NExpr,{_,Vars3}} = mangleMemberExpr(Members,false,Right,{This1,Vars2}),
                   {erl_syntax:match_expr(This2,NExpr),{This2,Vars3}};
                 _ ->
-                  mangle_member_expr(Members,Tail,Right,State1)
+                  mangleMemberExpr(Members,Tail,Right,State1)
               end;
-            _ -> mangle_member_expr_fold(Members,Tail,Expr,State1)
+            _ -> mangleMemberExprFold(Members,Tail,Expr,State1)
           end;
-        _ -> mangle_member_expr_fold(Members,Tail,Expr,State1)
+        _ -> mangleMemberExprFold(Members,Tail,Expr,State1)
       end;
-    _ -> mangle_member_expr_fold(Members,Tail,Expr,State1)
+    _ -> mangleMemberExprFold(Members,Tail,Expr,State1)
   end.
 
-mangle_member_exprs_clauses(Members,Tail,OCases,State1) ->
-  {Cases,State2} = mangle_member_exprs_clauses_1(Members,Tail,OCases,State1),
-  mangle_member_exprs_clauses_2(Tail,Cases,State2).
+mangleMemberExprsClauses(Members,Tail,OCases,State1) ->
+  {Cases,State2} = mangleMemberExprsClauses1(Members,Tail,OCases,State1),
+  mangleMemberExprsClauses2(Tail,Cases,State2).
 
-mangle_member_exprs_clauses_1(_Members,_Tail,[],State1) -> {[],State1};
-mangle_member_exprs_clauses_1(Members,Tail,OCases,{This1,Vars1}) ->
+mangleMemberExprsClauses1(_Members,_Tail,[],State1) -> {[],State1};
+mangleMemberExprsClauses1(Members,Tail,OCases,{This1,Vars1}) ->
   {Cases=[{_,This2}|_],Vars2} =
       lists:mapfoldl(fun (C1,VarsN) ->
-        {C2,{ThisM,VarsM}} = mangle_member_expr(Members,Tail,C1,{This1,VarsN}),
+        {C2,{ThisM,VarsM}} = mangleMemberExpr(Members,Tail,C1,{This1,VarsN}),
         {{C2,ThisM},VarsM}
       end, Vars1, OCases),
   {Cases,{This2,Vars2}}.
-mangle_member_exprs_clauses_2(Tail,Cases,{This1,Vars1}) ->
+mangleMemberExprsClauses2(Tail,Cases,{This1,Vars1}) ->
   case lists:all(fun ({_,T}) -> T==This1 end,Cases) of
     true -> {[ C || {C,_} <- Cases ],{This1,Vars1}};
     _ ->
-      {This2,Vars2} = new_this(Vars1),
+      {This2,Vars2} = newThis(Vars1),
       {NCases,Vars3} = lists:mapfoldl(fun ({Clause,OThis},VarsN) ->
             ?debug(Clause),
-            {Body,{_,VarsM}} = ?debug(mangle_member_exprs_enure_this(?debug(Tail),?debug(erl_syntax:clause_body(Clause)),?debug(OThis),?debug({This2,VarsN}))),
+            {Body,{_,VarsM}} = ?debug(mangleMemberExprsEnsureThis(?debug(Tail),?debug(erl_syntax:clause_body(Clause)),?debug(OThis),?debug({This2,VarsN}))),
             {erl_syntax:clause(erl_syntax:clause_patterns(Clause),erl_syntax:clause_guard(Clause),Body),VarsM}
           end,Vars2,Cases),
       {NCases,{This2,Vars3}}
   end.
 
   
-mangle_member_exprs_enure_this(Tail,Exprs,OThis,State1={NThis,_}) ->
+mangleMemberExprsEnsureThis(Tail,Exprs,OThis,State1={NThis,_}) ->
   {Before,[Last]} = lists:split(length(Exprs)-1,Exprs),
   case erl_syntax:type(Last) of
     match_expr ->
       case erl_syntax:match_expr_pattern(Last) of
         OThis -> {Before++[?match(NThis,erl_syntax:match_expr_body(Last))], State1};
-        _ -> mangle_member_exprs_enure_this_(Tail,Before,Last,OThis,State1)
+        _ -> mangleMemberExprsEnsureThis_(Tail,Before,Last,OThis,State1)
       end;
-    _ -> mangle_member_exprs_enure_this_(Tail,Before,Last,OThis,State1)
+    _ -> mangleMemberExprsEnsureThis_(Tail,Before,Last,OThis,State1)
   end.
-mangle_member_exprs_enure_this_(false,Before,Last,OThis,{NThis,Vars1}) ->
-  {Var,Vars2} = new_var(Vars1),
+mangleMemberExprsEnsureThis_(false,Before,Last,OThis,{NThis,Vars1}) ->
+  {Var,Vars2} = newVar(Vars1),
   {Before ++ [?match(Var,Last),?match(NThis,OThis),Var],{NThis,Vars2}};
-mangle_member_exprs_enure_this_(_Tail,Before,Last,_OThis,State1={_,_}) ->
+mangleMemberExprsEnsureThis_(_Tail,Before,Last,_OThis,State1={_,_}) ->
   {Before ++ [Last],State1}.
 
       
   
   
 
-find_member(_Name,_Arity,[]) -> undefined;
-find_member(Name,Arity,[H|T]) ->
-  case find_member(Name,Arity,H) of
-    undefined -> find_member(Name,Arity,T);
+findMember(_Name,_Arity,[]) -> undefined;
+findMember(Name,Arity,[H|T]) ->
+  case findMember(Name,Arity,H) of
+    undefined -> findMember(Name,Arity,T);
     Res -> Res
   end;
-find_member(Name,Arity,Member=#member{name=Name,arity=Arity}) -> Member;
-find_member(_Name,_Arity,_) -> undefined.
+findMember(Name,Arity,Member=#member{name=Name,arity=Arity}) -> Member;
+findMember(_Name,_Arity,_) -> undefined.
 
-field_members(_Module,Fields) ->
+fieldMembers(_Module,Fields) ->
   [ [ case F#field.getter of
         undefined -> [];
         _ ->
@@ -329,25 +334,25 @@ field_members(_Module,Fields) ->
       end
     ] || F <- Fields
   ] ++ [erl_syntax:attribute(?atom(member), [ ?abstract( {{update,1},[public,mutator,{mangle,false}]} ) ])].
-field_logic(Module,Fields) ->
-  ?debug("field_logic(~p,~p)",[Module,Fields]),
+fieldLogic(Module,Fields) ->
+  ?debug("fieldLogic(~p,~p)",[Module,Fields]),
   [ [ case F#field.getter of 
         undefined -> [];
         _ ->
           [ ?suppress_unused(F#field.getter,1)
-          , field_getter(F,Module,Fields)
+          , fieldGetter(F,Module,Fields)
           ]
       end
     , case F#field.setter of
         undefined -> [];
         _ ->
           [ ?suppress_unused(F#field.setter,2)
-          , field_setter(F,Module,Fields)
+          , fieldSetter(F,Module,Fields)
           ]
       end
     ] || F<-Fields ]
-  ++ [ update_logic(Module,Fields) ].
-field_getter(#field{name=Name,getter=Getter,default=Default},Module,_Fields) ->
+  ++ [ updateLogic(Module,Fields) ].
+fieldGetter(#field{name=Name,getter=Getter,default=Default},Module,_Fields) ->
   ?function(Getter,
   case Default of
     no_default -> [ ?clause([?record(Module,[?field(Name,?atom('#UNDEF#'))])],none,[?apply(erlang,error,[?atom(no_value)])]) ];
@@ -355,39 +360,39 @@ field_getter(#field{name=Name,getter=Getter,default=Default},Module,_Fields) ->
   end ++
   [ ?clause([?record(Module,[?field(Name,?var('Value'))])],none,[?var('Value')])
   ]).
-field_setter(#field{name=Name,setter=Setter},Module,_Fields) ->
+fieldSetter(#field{name=Name,setter=Setter},Module,_Fields) ->
   ?function(Setter,
   [ ?clause([?var('Value'), ?match(?var('This'),?record(Module,[]))], none,
       [ ?record(?var('This'),Module,[?field(Name,?var('Value'))]) ])
   ]).
 
-init_logic(Module,Fields) ->
+initLogic(Module,Fields) ->
   [ ?suppress_unused(init,length([ F || F=#field{default=no_default} <- Fields ]))
   , ?function(init, [?clause([?var('FIELD',F#field.name) || F=#field{default=no_default} <- Fields ],none,
       [?record(Module,[ ?field(F#field.name, case F#field.default of no_default -> ?var('FIELD',F#field.name);
                                                                                                        #default{value=Value} -> ?abstract(Value) end)
                                                           || F<-Fields ])])])
   ].
-member_exports(_Module,Members,_Fields) ->
+memberExports(_Module,Members,_Fields) ->
   % [ erl_syntax:attribute(?atom(export), [?abstract([{Name,Arity+1}])])
   [ erl_syntax:attribute(?atom(export), [?list([erl_syntax:arity_qualifier(?atom(Name),?int(Arity+1))])])
     || #member{name=Name,arity=Arity,public=true} <- Members ].
 
 
-update_logic(Module,Fields) ->
+updateLogic(Module,Fields) ->
   VarSource = [ ?var("_Source_"++integer_to_list(I)) || I <- lists:seq(1,length(Fields)) ],
   VarDest = [ ?var("_Dest_"++integer_to_list(I)) || I <- lists:seq(1,length(Fields)) ],
   [ ?function(update, [ ?clause([ ?record(Module,[ ?field(F#field.name,V) || {F,V} <- lists:zip(Fields,VarSource) ])
                                 , ?record(Module,[ ?field(F#field.name,V) || {F,V} <- lists:zip(Fields,VarDest) ])
-                                ], none, [?record(Module, [ ?field(F#field.name,update_logic(F#field.update,S,D)) || {F,{S,D}} <- lists:zip(Fields,lists:zip(VarSource,VarDest)) ])])]) ].
+                                ], none, [?record(Module, [ ?field(F#field.name,updateLogic(F#field.update,S,D)) || {F,{S,D}} <- lists:zip(Fields,lists:zip(VarSource,VarDest)) ])])]) ].
 
-update_logic(immutable,_Source,Dest) -> Dest;
-update_logic(replace,Source,_Dest) -> Source;
-update_logic(update,Source,Dest) -> erl_syntax:application(Dest,?atom(update),[Source]);
-update_logic(#ifdef{value=Undef,update=Update},Source,Dest) ->
-  ?cases(Source,[?clause([?abstract(Undef)],none,[Dest]),?clause([?underscore],none,[update_logic(Update,Source,Dest)])]);
-update_logic({Mod,Fun},Source,Dest) when is_atom(Mod), is_atom(Fun) -> ?apply(Mod,Fun,[Source,Dest]);
-update_logic(Fun,Source,Dest) when is_atom(Fun) -> ?apply(Fun,[Source,Dest]).
+updateLogic(immutable,_Source,Dest) -> Dest;
+updateLogic(replace,Source,_Dest) -> Source;
+updateLogic(update,Source,Dest) -> erl_syntax:application(Dest,?atom(update),[Source]);
+updateLogic(#ifdef{value=Undef,update=Update},Source,Dest) ->
+  ?cases(Source,[?clause([?abstract(Undef)],none,[Dest]),?clause([?underscore],none,[updateLogic(Update,Source,Dest)])]);
+updateLogic({Mod,Fun},Source,Dest) when is_atom(Mod), is_atom(Fun) -> ?apply(Mod,Fun,[Source,Dest]);
+updateLogic(Fun,Source,Dest) when is_atom(Fun) -> ?apply(Fun,[Source,Dest]).
                                
 
 
