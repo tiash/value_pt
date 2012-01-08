@@ -169,7 +169,7 @@ mangle_member_expr(Members,Tail,[Expr|Exprs],State1) ->
   {NExpr,State2} = mangle_member_expr(Members,false,Expr,State1),
   {NExprs,State3} = mangle_member_expr(Members,Tail,Exprs,State2),
   {[NExpr|NExprs],State3};
-mangle_member_expr(Members,Tail,Expr,State1={This1,_}) ->
+mangle_member_expr(Members,Tail,Expr,State1={This1,Vars1}) ->
   case erl_syntax:type(Expr) of
     variable -> case erl_syntax:variable_name(Expr) of 'THIS' -> {This1,State1}; _ -> {Expr,State1} end;
     application ->
@@ -225,12 +225,31 @@ mangle_member_expr(Members,Tail,Expr,State1={This1,_}) ->
       end,
       {After2,{_,VarsY}} = mangle_member_expr(Members,true,After0,{This1,VarsX}),
       {erl_syntax:try_expr(Body2,Cases2,Handlers2,After2),{ThisX,VarsY}};
-    implicit_fun -> {Expr,State1}; %% Functions can not manipulate this...
+    implicit_fun -> {Expr,State1}; %% Functions can not manipulate 'THIS'...
     clause ->
       {Pattern,State2} = mangle_member_expr(Members,false,erl_syntax:clause_patterns(Expr),State1),
       {Guard,State3} = mangle_member_expr(Members,false,erl_syntax:clause_guard(Expr),State2),
       {Body,State4} = mangle_member_expr(Members,Tail,erl_syntax:clause_body(Expr),State3),
       {erl_syntax:clause(Pattern,Guard,Body),State4};
+    match_expr -> 
+      Left = erl_syntax:match_expr_pattern(Expr),
+      Right = erl_syntax:match_expr_body(Expr),
+      case erl_syntax:type(Left) of
+        variable ->
+          case erl_syntax:variable_name(Expr) of
+            'THIS' ->
+              case Tail of
+                false ->
+                  {This2,Vars2} = new_this(Vars1),
+                  {NExpr,{_,Vars3}} = mangle_member_expr(Members,false,Right,{This1,Vars2}),
+                  {erl_syntax:match_expr(This2,NExpr),{This2,Vars3}};
+                _ ->
+                  mangle_member_expr(Members,Tail,Right,State1)
+              end;
+            _ -> mangle_member_expr_fold(Members,Tail,Expr,State1)
+          end;
+        _ -> mangle_member_expr_fold(Members,Tail,Expr,State1)
+      end;
     _ -> mangle_member_expr_fold(Members,Tail,Expr,State1)
   end.
 
