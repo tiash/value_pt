@@ -33,7 +33,8 @@
   {vsn, "1.0"},
   {registered, []},
   %% don't register anything since we don't actually want to include ths in shiping code
-  {applications, []},
+  {applications, [kernel,stdlib,compiler,syntax_tool]},
   {mod, []},
+  {modules, [value_pt]},
   {env, []}
  ]}.
