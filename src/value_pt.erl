@@ -242,7 +242,7 @@ mangleMemberExpr(Members,Tail,Expr,State1={Self1,Vars1}) ->
       Right = erl_syntax:match_expr_body(Expr),
       case erl_syntax:type(Left) of
         variable ->
-          case erl_syntax:variable_name(Expr) of
+          case erl_syntax:variable_name(Left) of
             'SELF' ->
               case Tail of
                 false ->
